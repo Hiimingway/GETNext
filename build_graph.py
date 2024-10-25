@@ -6,7 +6,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-
+from param_parser import parameter_parser
 
 def build_global_POI_checkin_graph(df, exclude_user=None):
     G = nx.DiGraph()
@@ -140,7 +140,7 @@ if __name__ == '__main__':
     dst_dir = r'dataset/NYC'
 
     # Build POI checkin trajectory graph
-    train_df = pd.read_csv(os.path.join(dst_dir, 'NYC_train.csv'))
+    train_df = pd.read_csv(os.path.join(dst_dir, 'train.csv'))
     print('Build global POI checkin graph -----------------------------------')
     G = build_global_POI_checkin_graph(train_df)
 

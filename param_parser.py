@@ -20,21 +20,25 @@ def parameter_parser():
                         default=device,
                         help='')
     # Data
+    parser.add_argument('--dataset_name',
+                    type=str,
+                    default='NYC',
+                    help='Name of dataset')
     parser.add_argument('--data-adj-mtx',
                         type=str,
-                        default='dataset/NYC/graph_A.csv',
+                        default='graph_A.csv',
                         help='Graph adjacent path')
     parser.add_argument('--data-node-feats',
                         type=str,
-                        default='dataset/NYC/graph_X.csv',
+                        default='graph_X.csv',
                         help='Graph node features path')
     parser.add_argument('--data-train',
                         type=str,
-                        default='dataset/NYC/NYC_train.csv',
+                        default='train.csv',
                         help='Training data path')
     parser.add_argument('--data-val',
                         type=str,
-                        default='dataset/NYC/NYC_val.csv',
+                        default='val.csv',
                         help='Validation data path')
     parser.add_argument('--short-traj-thres',
                         type=int,

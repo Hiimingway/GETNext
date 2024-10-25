@@ -5,6 +5,7 @@ import pathlib
 import pickle
 import zipfile
 from pathlib import Path
+import os
 
 import numpy as np
 import pandas as pd
@@ -55,13 +56,13 @@ def train(args):
 
     # %% ====================== Load data ======================
     # Read check-in train data
-    train_df = pd.read_csv(args.data_train)
-    val_df = pd.read_csv(args.data_val)
+    train_df = pd.read_csv(os.path.join(f"dataset/{args.dataset_name}",args.data_train))
+    val_df = pd.read_csv(os.path.join(f"dataset/{args.dataset_name}",args.data_val))
 
     # Build POI graph (built from train_df)
     print('Loading POI graph...')
-    raw_A = load_graph_adj_mtx(args.data_adj_mtx)
-    raw_X = load_graph_node_features(args.data_node_feats,
+    raw_A = load_graph_adj_mtx(os.path.join(f"dataset/{args.dataset_name}",args.data_adj_mtx))
+    raw_X = load_graph_node_features(os.path.join(f"dataset/{args.dataset_name}",args.data_node_feats),
                                      args.feature1,
                                      args.feature2,
                                      args.feature3,
