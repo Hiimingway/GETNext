@@ -3,10 +3,10 @@ import argparse
 
 import torch
 
-if torch.cuda.is_available():
-    device = torch.device('cuda')
-else:
-    device = torch.device('cpu')
+# if torch.cuda.is_available():
+#     device = torch.device('cuda')
+# else:
+#     device = torch.device('cpu')
 
 
 def parameter_parser():
@@ -15,10 +15,10 @@ def parameter_parser():
                         type=int,
                         default=42,
                         help='Random seed')
-    parser.add_argument('--device',
-                        type=str,
-                        default=device,
-                        help='')
+    # parser.add_argument('--device',
+    #                     type=str,
+    #                     default=device,
+    #                     help='')
     # Data
     parser.add_argument('--dataset_name',
                     type=str,
@@ -158,5 +158,25 @@ def parameter_parser():
                         type=int,
                         default=64973,
                         help='python console use only')
+    parser.add_argument('--gpu_id',
+                    type=int,
+                    default=-1,
+                    help='GPU ID to use, -1 for CPU only')
+    
+    args = parser.parse_args()
 
-    return parser.parse_args()
+    # GPU 设置
+    if torch.cuda.is_available() and args.gpu_id >= 0:
+        device = torch.device(f'cuda:{args.gpu_id}')
+        print(f"Using GPU: {torch.cuda.get_device_name(device)}")
+    elif torch.cuda.is_available():
+        device = torch.device('cuda')
+        print(f"Using default GPU: {torch.cuda.get_device_name(device)}")
+    else:
+        device = torch.device('cpu')
+        print("CUDA is not available, using CPU instead.")
+
+    args.device = device
+    return args
+
+
