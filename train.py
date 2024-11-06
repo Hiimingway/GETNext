@@ -22,11 +22,20 @@ from dataloader import load_graph_adj_mtx, load_graph_node_features
 from model import GCN, NodeAttnMap, UserEmbeddings, Time2Vec, CategoryEmbeddings, FuseEmbeddings, TransformerModel
 from param_parser import parameter_parser
 from utils import increment_path, calculate_laplacian_matrix, zipdir, top_k_acc_last_timestep, \
-    mAP_metric_last_timestep, MRR_metric_last_timestep, maksed_mse_loss
+    mAP_metric_last_timestep, MRR_metric_last_timestep, maksed_mse_loss, ndcg_k_last_timestep
 
+
+def monitor_memory():
+    allocated = torch.cuda.memory_allocated() / (1024 ** 2)  # 当前分配的显存 (MB)
+    reserved = torch.cuda.memory_reserved() / (1024 ** 2)  # 当前预留的显存 (MB)
+    max_reserved = torch.cuda.max_memory_reserved() / (1024 ** 2)  # 最大预留显存 (MB)
+
+    print(f"Allocated memory: {allocated:.2f} MB")
+    print(f"Reserved memory: {reserved:.2f} MB")
+    print(f"Max reserved memory: {max_reserved:.2f} MB")
 
 def train(args):
-    args.save_dir = increment_path(Path(args.project) / args.name, exist_ok=args.exist_ok, sep='-')
+    args.save_dir = increment_path(Path(args.project) /str(args.train_sample)/args.dataset_name/args.name, exist_ok=args.exist_ok, sep='-')
     if not os.path.exists(args.save_dir): os.makedirs(args.save_dir)
 
     # Setup logger
@@ -56,17 +65,19 @@ def train(args):
 
     # %% ====================== Load data ======================
     # Read check-in train data
-    train_df = pd.read_csv(os.path.join(f"dataset/{args.dataset_name}",args.data_train))
-    val_df = pd.read_csv(os.path.join(f"dataset/{args.dataset_name}",args.data_val))
+    train_df = pd.read_csv(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_train))
+    # do test at each epoch
+    val_df = pd.read_csv(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_test))
 
     # Build POI graph (built from train_df)
     print('Loading POI graph...')
-    raw_A = load_graph_adj_mtx(os.path.join(f"dataset/{args.dataset_name}",args.data_adj_mtx))
-    raw_X = load_graph_node_features(os.path.join(f"dataset/{args.dataset_name}",args.data_node_feats),
-                                     args.feature1,
-                                     args.feature2,
-                                     args.feature3,
-                                     args.feature4)
+    raw_A = load_graph_adj_mtx(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_adj_mtx))
+    # raw_X = load_graph_node_features(os.path.join(f"dataset/{args.dataset_name}",args.data_node_feats),
+    #                                  args.feature1,
+    #                                  args.feature2,
+    #                                  args.feature3,
+    #                                  args.feature4)
+    raw_X = load_graph_node_features(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_node_feats), feature_indices=(1, 2, 5, 6))
     logging.info(
         f"raw_X.shape: {raw_X.shape}; "
         f"Four features: {args.feature1}, {args.feature2}, {args.feature3}, {args.feature4}.")
@@ -93,22 +104,41 @@ def train(args):
     # Normalization
     print('Laplician matrix...')
     A = calculate_laplacian_matrix(raw_A, mat_type='hat_rw_normd_lap_mat')
+# def load_graph_node_features(path):
+#     """
+#     Load node features from binary (.npy) file.
+#     Returns the features as separate lists.
+#     """
+#     # 加载节点信息二进制文件
+#     nodes_array = np.load(path, allow_pickle=True)
+
+#     # 提取特定列的信息
+#     node_names = nodes_array[:, 0]  # POI ID / 节点名称
+#     checkin_cnt = nodes_array[:, 1].astype(int)  # 签到次数
+#     poi_catid = nodes_array[:, 2]  # POI 类别 ID
+#     poi_catid_code = nodes_array[:, 3]  # POI 类别代码
+#     poi_catname = nodes_array[:, 4]  # POI 类别名称
+#     latitude = nodes_array[:, 5].astype(float)  # 纬度
+#     longitude = nodes_array[:, 6].astype(float)  # 经度
+
+#     return node_names, checkin_cnt, poi_catid, poi_catid_code, poi_catname, latitude, longitude
+
 
     # POI id to index
-    nodes_df = pd.read_csv(args.data_node_feats)
-    poi_ids = list(set(nodes_df['node_name/poi_id'].tolist()))
+    nodes_df = np.load(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_node_feats), allow_pickle=True) 
+    poi_ids = list(set(nodes_df[:, 0].tolist()))
     poi_id2idx_dict = dict(zip(poi_ids, range(len(poi_ids))))
 
     # Cat id to index
-    cat_ids = list(set(nodes_df[args.feature2].tolist()))
+    cat_ids = list(set(nodes_df[:, 2].tolist()))
     cat_id2idx_dict = dict(zip(cat_ids, range(len(cat_ids))))
 
     # Poi idx to cat idx
     poi_idx2cat_idx_dict = {}
-    for i, row in nodes_df.iterrows():
-        poi_idx2cat_idx_dict[poi_id2idx_dict[row['node_name/poi_id']]] = \
-            cat_id2idx_dict[row[args.feature2]]
-
+    for row in nodes_df:
+        poi_idx2cat_idx_dict[poi_id2idx_dict[row[0]]] = \
+            cat_id2idx_dict[row[2]]
+# poi_idx2cat_idx_dict[poi_id2idx_dict[row[0]]] = cat_id2idx_dict[row[args.feature2]]
     # User id to index
     user_ids = [str(each) for each in list(set(train_df['user_id'].to_list()))]
     user_id2idx_dict = dict(zip(user_ids, range(len(user_ids))))
@@ -150,7 +180,7 @@ def train(args):
         def __getitem__(self, index):
             return (self.traj_seqs[index], self.input_seqs[index], self.label_seqs[index])
 
-    class TrajectoryDatasetVal(Dataset):
+    class  TrajectoryDatasetVal(Dataset):
         def __init__(self, df):
             self.df = df
             self.traj_seqs = []
@@ -169,20 +199,26 @@ def train(args):
                 poi_ids = traj_df['POI_id'].to_list()
                 poi_idxs = []
                 time_feature = traj_df[args.time_feature].to_list()
-
-                for each in poi_ids:
-                    if each in poi_id2idx_dict.keys():
+                default_value = poi_id2idx_dict[list(poi_id2idx_dict.keys())[0]]
+                flag = []
+                valid_ids = set(poi_id2idx_dict.keys())
+                for idx, each in enumerate(poi_ids):
+                    if each in valid_ids:
                         poi_idxs.append(poi_id2idx_dict[each])
                     else:
-                        # Ignore poi if not in training set
-                        continue
-
+                        # Record the abnormal points
+                        poi_idxs.append(default_value)
+                        flag.append(idx)
+                        
                 # Construct input seq and label seq
                 input_seq = []
                 label_seq = []
                 for i in range(len(poi_idxs) - 1):
                     input_seq.append((poi_idxs[i], time_feature[i]))
-                    label_seq.append((poi_idxs[i + 1], time_feature[i + 1]))
+                    if i in flag:  #Abnormal point
+                        label_seq.append((-1, time_feature[i + 1]))
+                    else:
+                        label_seq.append((poi_idxs[i + 1], time_feature[i + 1]))
 
                 # Ignore seq if too short
                 if len(input_seq) < args.short_traj_thres:
@@ -346,6 +382,7 @@ def train(args):
     train_epochs_top10_acc_list = []
     train_epochs_top20_acc_list = []
     train_epochs_mAP20_list = []
+    train_epochs_ndcg5_list = []
     train_epochs_mrr_list = []
     train_epochs_loss_list = []
     train_epochs_poi_loss_list = []
@@ -361,12 +398,17 @@ def train(args):
     val_epochs_poi_loss_list = []
     val_epochs_time_loss_list = []
     val_epochs_cat_loss_list = []
+    val_epochs_ndcg5_list = []
     # For saving ckpt
     max_val_score = -np.inf
 
     for epoch in range(args.epochs):
         logging.info(f"{'*' * 50}Epoch:{epoch:03d}{'*' * 50}\n")
-        poi_embed_model.train()
+        try:
+            poi_embed_model.train()
+        except RuntimeError as e:
+            print("OOM Error:", e)
+            monitor_memory()  # OOM后查看当前显存状态
         node_attn_model.train()
         user_embed_model.train()
         time_embed_model.train()
@@ -374,6 +416,7 @@ def train(args):
         embed_fuse_model1.train()
         embed_fuse_model2.train()
         seq_model.train()
+        
 
         train_batches_top1_acc_list = []
         train_batches_top5_acc_list = []
@@ -385,6 +428,7 @@ def train(args):
         train_batches_poi_loss_list = []
         train_batches_time_loss_list = []
         train_batches_cat_loss_list = []
+        train_batches_ndcg5_list = []
         src_mask = seq_model.generate_square_subsequent_mask(args.batch).to(args.device)
         # Loop batch
         for b_idx, batch in enumerate(train_loader):
@@ -429,7 +473,11 @@ def train(args):
             y_poi = label_padded_poi.to(device=args.device, dtype=torch.long)
             y_time = label_padded_time.to(device=args.device, dtype=torch.float)
             y_cat = label_padded_cat.to(device=args.device, dtype=torch.long)
-            y_pred_poi, y_pred_time, y_pred_cat = seq_model(x, src_mask)
+            try:
+                y_pred_poi, y_pred_time, y_pred_cat = seq_model(x, src_mask)
+            except RuntimeError as e:
+                print("OOM Error:", e)
+                monitor_memory()  # OOM后查看当前显存状态
 
             # Graph Attention adjusted prob
             y_pred_poi_adjusted = adjust_pred_prob_by_graph(y_pred_poi)
@@ -451,6 +499,7 @@ def train(args):
             top20_acc = 0
             mAP20 = 0
             mrr = 0
+            ndcg5 = 0
             batch_label_pois = y_poi.detach().cpu().numpy()
             batch_pred_pois = y_pred_poi_adjusted.detach().cpu().numpy()
             batch_pred_times = y_pred_time.detach().cpu().numpy()
@@ -464,12 +513,14 @@ def train(args):
                 top20_acc += top_k_acc_last_timestep(label_pois, pred_pois, k=20)
                 mAP20 += mAP_metric_last_timestep(label_pois, pred_pois, k=20)
                 mrr += MRR_metric_last_timestep(label_pois, pred_pois)
+                ndcg5 += ndcg_k_last_timestep(label_pois, pred_pois, k=5)
             train_batches_top1_acc_list.append(top1_acc / len(batch_label_pois))
             train_batches_top5_acc_list.append(top5_acc / len(batch_label_pois))
             train_batches_top10_acc_list.append(top10_acc / len(batch_label_pois))
             train_batches_top20_acc_list.append(top20_acc / len(batch_label_pois))
             train_batches_mAP20_list.append(mAP20 / len(batch_label_pois))
             train_batches_mrr_list.append(mrr / len(batch_label_pois))
+            train_batches_ndcg5_list.append(ndcg5 / len(batch_label_pois))
             train_batches_loss_list.append(loss.detach().cpu().numpy())
             train_batches_poi_loss_list.append(loss_poi.detach().cpu().numpy())
             train_batches_time_loss_list.append(loss_time.detach().cpu().numpy())
@@ -491,6 +542,7 @@ def train(args):
                              f'train_move_top20_acc:{np.mean(train_batches_top20_acc_list):.4f}\n'
                              f'train_move_mAP20:{np.mean(train_batches_mAP20_list):.4f}\n'
                              f'train_move_MRR:{np.mean(train_batches_mrr_list):.4f}\n'
+                             f'train_move_ndcg5:{np.mean(train_batches_ndcg5_list):.4f}\n'
                              f'traj_id:{batch[sample_idx][0]}\n'
                              f'input_seq: {batch[sample_idx][1]}\n'
                              f'label_seq:{batch[sample_idx][2]}\n'
@@ -518,6 +570,7 @@ def train(args):
         val_batches_mAP20_list = []
         val_batches_mrr_list = []
         val_batches_loss_list = []
+        val_batches_ndcg5_list = []
         val_batches_poi_loss_list = []
         val_batches_time_loss_list = []
         val_batches_cat_loss_list = []
@@ -543,7 +596,9 @@ def train(args):
                 label_seq = [each[0] for each in sample[2]]
                 input_seq_time = [each[1] for each in sample[1]]
                 label_seq_time = [each[1] for each in sample[2]]
-                label_seq_cats = [poi_idx2cat_idx_dict[each] for each in label_seq]
+                # 使用padding=-1 填充不存在于训练集的值
+                label_seq_cats = [poi_idx2cat_idx_dict.get(each, -1) for each in label_seq]
+                # label_seq_cats = [poi_idx2cat_idx_dict[each] for each in label_seq]
                 input_seq_embed = torch.stack(input_traj_to_embeddings(sample, poi_embeddings))
                 batch_seq_embeds.append(input_seq_embed)
                 batch_seq_lens.append(len(input_seq))
@@ -581,6 +636,7 @@ def train(args):
             top20_acc = 0
             mAP20 = 0
             mrr = 0
+            ndcg5 = 0
             batch_label_pois = y_poi.detach().cpu().numpy()
             batch_pred_pois = y_pred_poi_adjusted.detach().cpu().numpy()
             batch_pred_times = y_pred_time.detach().cpu().numpy()
@@ -594,12 +650,14 @@ def train(args):
                 top20_acc += top_k_acc_last_timestep(label_pois, pred_pois, k=20)
                 mAP20 += mAP_metric_last_timestep(label_pois, pred_pois, k=20)
                 mrr += MRR_metric_last_timestep(label_pois, pred_pois)
+                ndcg5 += ndcg_k_last_timestep(label_pois, pred_pois, k=5)
             val_batches_top1_acc_list.append(top1_acc / len(batch_label_pois))
             val_batches_top5_acc_list.append(top5_acc / len(batch_label_pois))
             val_batches_top10_acc_list.append(top10_acc / len(batch_label_pois))
             val_batches_top20_acc_list.append(top20_acc / len(batch_label_pois))
             val_batches_mAP20_list.append(mAP20 / len(batch_label_pois))
             val_batches_mrr_list.append(mrr / len(batch_label_pois))
+            val_batches_ndcg5_list.append(ndcg5 / len(batch_label_pois))
             val_batches_loss_list.append(loss.detach().cpu().numpy())
             val_batches_poi_loss_list.append(loss_poi.detach().cpu().numpy())
             val_batches_time_loss_list.append(loss_time.detach().cpu().numpy())
@@ -621,6 +679,7 @@ def train(args):
                              f'val_move_top20_acc:{np.mean(val_batches_top20_acc_list):.4f} \n'
                              f'val_move_mAP20:{np.mean(val_batches_mAP20_list):.4f} \n'
                              f'val_move_MRR:{np.mean(val_batches_mrr_list):.4f} \n'
+                             f'val_move_ndcg5:{np.mean(val_batches_ndcg5_list):.4f} \n'
                              f'traj_id:{batch[sample_idx][0]}\n'
                              f'input_seq:{batch[sample_idx][1]}\n'
                              f'label_seq:{batch[sample_idx][2]}\n'
@@ -640,6 +699,7 @@ def train(args):
         epoch_train_top20_acc = np.mean(train_batches_top20_acc_list)
         epoch_train_mAP20 = np.mean(train_batches_mAP20_list)
         epoch_train_mrr = np.mean(train_batches_mrr_list)
+        epoch_train_ndcg5 = np.mean(train_batches_ndcg5_list)
         epoch_train_loss = np.mean(train_batches_loss_list)
         epoch_train_poi_loss = np.mean(train_batches_poi_loss_list)
         epoch_train_time_loss = np.mean(train_batches_time_loss_list)
@@ -649,6 +709,7 @@ def train(args):
         epoch_val_top10_acc = np.mean(val_batches_top10_acc_list)
         epoch_val_top20_acc = np.mean(val_batches_top20_acc_list)
         epoch_val_mAP20 = np.mean(val_batches_mAP20_list)
+        epoch_val_ndcg5 = np.mean(val_batches_ndcg5_list)
         epoch_val_mrr = np.mean(val_batches_mrr_list)
         epoch_val_loss = np.mean(val_batches_loss_list)
         epoch_val_poi_loss = np.mean(val_batches_poi_loss_list)
@@ -664,6 +725,7 @@ def train(args):
         train_epochs_top5_acc_list.append(epoch_train_top5_acc)
         train_epochs_top10_acc_list.append(epoch_train_top10_acc)
         train_epochs_top20_acc_list.append(epoch_train_top20_acc)
+        train_epochs_ndcg5_list.append(epoch_train_ndcg5)
         train_epochs_mAP20_list.append(epoch_train_mAP20)
         train_epochs_mrr_list.append(epoch_train_mrr)
         val_epochs_loss_list.append(epoch_val_loss)
@@ -676,6 +738,7 @@ def train(args):
         val_epochs_top20_acc_list.append(epoch_val_top20_acc)
         val_epochs_mAP20_list.append(epoch_val_mAP20)
         val_epochs_mrr_list.append(epoch_val_mrr)
+        val_epochs_ndcg5_list.append(epoch_val_ndcg5)
 
         # Monitor loss and score
         monitor_loss = epoch_val_loss
@@ -696,6 +759,7 @@ def train(args):
                      f"train_top20_acc:{epoch_train_top20_acc:.4f}, "
                      f"train_mAP20:{epoch_train_mAP20:.4f}, "
                      f"train_mrr:{epoch_train_mrr:.4f}\n"
+                     f"train_ndcg5:{epoch_train_ndcg5:.4f}\n"
                      f"val_loss: {epoch_val_loss:.4f}, "
                      f"val_poi_loss: {epoch_val_poi_loss:.4f}, "
                      f"val_time_loss: {epoch_val_time_loss:.4f}, "
@@ -705,6 +769,7 @@ def train(args):
                      f"val_top10_acc:{epoch_val_top10_acc:.4f}, "
                      f"val_top20_acc:{epoch_val_top20_acc:.4f}, "
                      f"val_mAP20:{epoch_val_mAP20:.4f}, "
+                     f"val_ndcg5:{epoch_val_ndcg5:.4f}, "
                      f"val_mrr:{epoch_val_mrr:.4f}")
 
         # Save poi and user embeddings
@@ -775,7 +840,8 @@ def train(args):
                     'epoch_train_top10_acc': epoch_train_top10_acc,
                     'epoch_train_top20_acc': epoch_train_top20_acc,
                     'epoch_train_mAP20': epoch_train_mAP20,
-                    'epoch_train_mrr': epoch_train_mrr
+                    'epoch_train_mrr': epoch_train_mrr,
+                    'epoch_train_ndcg5': epoch_train_ndcg5
                 },
                 'epoch_val_metrics': {
                     'epoch_val_loss': epoch_val_loss,
@@ -787,7 +853,8 @@ def train(args):
                     'epoch_val_top10_acc': epoch_val_top10_acc,
                     'epoch_val_top20_acc': epoch_val_top20_acc,
                     'epoch_val_mAP20': epoch_val_mAP20,
-                    'epoch_val_mrr': epoch_val_mrr
+                    'epoch_val_mrr': epoch_val_mrr,
+                    'epoch_val_ndcg5': epoch_val_ndcg5
                 }
             }
             model_save_dir = os.path.join(args.save_dir, 'checkpoints')
@@ -814,6 +881,7 @@ def train(args):
                   file=f)
             print(f'train_epochs_mAP20_list={[float(f"{each:.4f}") for each in train_epochs_mAP20_list]}', file=f)
             print(f'train_epochs_mrr_list={[float(f"{each:.4f}") for each in train_epochs_mrr_list]}', file=f)
+            print(f'train_epochs_ndcg5_list={[float(f"{each:.4f}") for each in train_epochs_ndcg5_list]}', file=f)
         with open(os.path.join(args.save_dir, 'metrics-val.txt'), "w") as f:
             print(f'val_epochs_loss_list={[float(f"{each:.4f}") for each in val_epochs_loss_list]}', file=f)
             print(f'val_epochs_poi_loss_list={[float(f"{each:.4f}") for each in val_epochs_poi_loss_list]}', file=f)
@@ -825,6 +893,7 @@ def train(args):
             print(f'val_epochs_top20_acc_list={[float(f"{each:.4f}") for each in val_epochs_top20_acc_list]}', file=f)
             print(f'val_epochs_mAP20_list={[float(f"{each:.4f}") for each in val_epochs_mAP20_list]}', file=f)
             print(f'val_epochs_mrr_list={[float(f"{each:.4f}") for each in val_epochs_mrr_list]}', file=f)
+            print(f'val_epochs_ndcg5_list={[float(f"{each:.4f}") for each in val_epochs_ndcg5_list]}', file=f)
 
 
 if __name__ == '__main__':

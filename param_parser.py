@@ -24,31 +24,34 @@ def parameter_parser():
                     type=str,
                     default='NYC',
                     help='Name of dataset')
-    parser.add_argument('--data-adj-mtx',
+    parser.add_argument('--train_sample',
+                type=float,
+                choices=[0.3,0.1,0.5])
+    parser.add_argument('--data_adj_mtx',
                         type=str,
-                        default='graph_A.csv',
+                        default='graph_A.npy',
                         help='Graph adjacent path')
-    parser.add_argument('--data-node-feats',
+    parser.add_argument('--data_node_feats',
                         type=str,
-                        default='graph_X.csv',
+                        default='graph_X.npy',
                         help='Graph node features path')
-    parser.add_argument('--data-train',
+    parser.add_argument('--data_train',
                         type=str,
                         default='train.csv',
                         help='Training data path')
-    parser.add_argument('--data-val',
+    parser.add_argument('--data_test',
                         type=str,
-                        default='val.csv',
-                        help='Validation data path')
-    parser.add_argument('--short-traj-thres',
+                        default='test.csv',
+                        help='Test data path')
+    parser.add_argument('--short_traj_thres',
                         type=int,
                         default=2,
                         help='Remove over-short trajectory')
-    parser.add_argument('--time-units',
+    parser.add_argument('--time_units',
                         type=int,
                         default=48,
                         help='Time unit is 0.5 hour, 24/0.5=48')
-    parser.add_argument('--time-feature',
+    parser.add_argument('--time_feature',
                         type=str,
                         default='norm_in_day_time',
                         help='The name of time feature in the data')
@@ -110,7 +113,7 @@ def parameter_parser():
                         help='Batch size.')
     parser.add_argument('--epochs',
                         type=int,
-                        default=200,
+                        default=10,
                         help='Number of epochs to train.')
     parser.add_argument('--lr',
                         type=float,

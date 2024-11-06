@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
 from scipy.sparse.linalg import eigsh
-
+import scipy.sparse as sp
 
 def fit_delimiter(string='', length=80, delimiter="="):
     result_len = length - len(string)
@@ -56,44 +56,93 @@ def get_normalized_features(X):
     return X, means, stds
 
 
+# def calculate_laplacian_matrix(adj_mat, mat_type):
+#     n_vertex = adj_mat.shape[0]
+
+#     # row sum
+#     deg_mat_row = np.asmatrix(np.diag(np.sum(adj_mat, axis=1)))
+#     # column sum
+#     # deg_mat_col = np.asmatrix(np.diag(np.sum(adj_mat, axis=0)))
+#     deg_mat = deg_mat_row
+
+#     adj_mat = np.asmatrix(adj_mat)
+#     id_mat = np.asmatrix(np.identity(n_vertex))
+
+#     if mat_type == 'com_lap_mat':
+#         # Combinatorial
+#         com_lap_mat = deg_mat - adj_mat
+#         return com_lap_mat
+#     elif mat_type == 'wid_rw_normd_lap_mat':
+#         # For ChebConv
+#         rw_lap_mat = np.matmul(np.linalg.matrix_power(deg_mat, -1), adj_mat)
+#         rw_normd_lap_mat = id_mat - rw_lap_mat
+#         lambda_max_rw = eigsh(rw_lap_mat, k=1, which='LM', return_eigenvectors=False)[0]
+#         wid_rw_normd_lap_mat = 2 * rw_normd_lap_mat / lambda_max_rw - id_mat
+#         return wid_rw_normd_lap_mat
+#     elif mat_type == 'hat_rw_normd_lap_mat':
+#         # For GCNConv
+#         wid_deg_mat = deg_mat + id_mat
+#         wid_adj_mat = adj_mat + id_mat
+#         hat_rw_normd_lap_mat = np.matmul(np.linalg.matrix_power(wid_deg_mat, -1), wid_adj_mat)
+#         return hat_rw_normd_lap_mat
+#     else:
+#         raise ValueError(f'ERROR: {mat_type} is unknown.')
+
 def calculate_laplacian_matrix(adj_mat, mat_type):
+    # 转为稀疏矩阵表示
+    adj_mat = sp.csr_matrix(adj_mat)
     n_vertex = adj_mat.shape[0]
 
-    # row sum
-    deg_mat_row = np.asmatrix(np.diag(np.sum(adj_mat, axis=1)))
-    # column sum
-    # deg_mat_col = np.asmatrix(np.diag(np.sum(adj_mat, axis=0)))
-    deg_mat = deg_mat_row
+    # 计算度矩阵（行和）
+    deg_mat = sp.diags(np.array(adj_mat.sum(axis=1)).flatten())
 
-    adj_mat = np.asmatrix(adj_mat)
-    id_mat = np.asmatrix(np.identity(n_vertex))
+    # 单位矩阵
+    id_mat = sp.eye(n_vertex)
 
     if mat_type == 'com_lap_mat':
-        # Combinatorial
+        # Combinatorial Laplacian
         com_lap_mat = deg_mat - adj_mat
-        return com_lap_mat
+        return com_lap_mat.toarray()  # 如果需要返回密集矩阵
     elif mat_type == 'wid_rw_normd_lap_mat':
-        # For ChebConv
-        rw_lap_mat = np.matmul(np.linalg.matrix_power(deg_mat, -1), adj_mat)
+        # Widely normalized Laplacian (for ChebConv)
+        rw_lap_mat = sp.linalg.inv(deg_mat).dot(adj_mat)  # 使用稀疏矩阵求逆
         rw_normd_lap_mat = id_mat - rw_lap_mat
         lambda_max_rw = eigsh(rw_lap_mat, k=1, which='LM', return_eigenvectors=False)[0]
         wid_rw_normd_lap_mat = 2 * rw_normd_lap_mat / lambda_max_rw - id_mat
-        return wid_rw_normd_lap_mat
+        return wid_rw_normd_lap_mat.toarray()
     elif mat_type == 'hat_rw_normd_lap_mat':
-        # For GCNConv
+        # Hat normalized Laplacian (for GCNConv)
         wid_deg_mat = deg_mat + id_mat
         wid_adj_mat = adj_mat + id_mat
-        hat_rw_normd_lap_mat = np.matmul(np.linalg.matrix_power(wid_deg_mat, -1), wid_adj_mat)
-        return hat_rw_normd_lap_mat
+        hat_rw_normd_lap_mat = sp.linalg.inv(wid_deg_mat).dot(wid_adj_mat)
+        return hat_rw_normd_lap_mat.toarray()
     else:
         raise ValueError(f'ERROR: {mat_type} is unknown.')
 
-
 def maksed_mse_loss(input, target, mask_value=-1):
     mask = target == mask_value
+    if len(input.shape) < 2:
+        input = input.unsqueeze(0)
     out = (input[~mask] - target[~mask]) ** 2
     loss = out.mean()
     return loss
+
+def dcg_at_k(scores, k):
+    """Calculate DCG for the top k scoring items."""
+    order = np.argsort(scores)[::-1]
+    scores = np.array(scores)[order][:k]
+    gains = 2 ** scores - 1  # 这里假设分数已经是相关性得分
+    discounts = np.log2(np.arange(2, k + 2))
+    return np.sum(gains / discounts)
+
+def ndcg_at_k(scores, k):
+    """Calculate NDCG for the top k scoring items."""
+    best_scores = sorted(scores, reverse=True)[:k]
+    ideal_dcg = dcg_at_k(best_scores, k)
+    actual_dcg = dcg_at_k(scores, k)
+    if ideal_dcg == 0:
+        return 0
+    return actual_dcg / ideal_dcg
 
 
 def top_k_acc(y_true_seq, y_pred_seq, k):
@@ -166,6 +215,17 @@ def MRR_metric_last_timestep(y_true_seq, y_pred_seq):
     r_idx = np.where(rec_list == y_true)[0][0]
     return 1 / (r_idx + 1)
 
+def ndcg_k_last_timestep(y_true_seq, y_pred_scores, k):
+    """Calculate NDCG for the last timestep predictions based on scores."""
+    y_true = y_true_seq[-1]
+    y_pred_scores = y_pred_scores[-1]  # 假设这是分数数组而不是ID
+
+    # 创建相关性分数（1 如果是正确的 POI，否则为 0）
+    relevance_scores = [1 if i == y_true else 0 for i in range(len(y_pred_scores))]
+
+    # 计算 NDCG@k
+    ndcg_score = ndcg_at_k(relevance_scores, k)
+    return ndcg_score
 
 def array_round(x, k=4):
     # For a list of float values, keep k decimals of each element
