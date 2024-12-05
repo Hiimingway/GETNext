@@ -1,12 +1,12 @@
 import logging
-import logging
 import os
 import pathlib
 import pickle
 import zipfile
 from pathlib import Path
-import os
-
+import json
+import uuid
+import time
 import numpy as np
 import pandas as pd
 import torch
@@ -35,7 +35,8 @@ def monitor_memory():
     print(f"Max reserved memory: {max_reserved:.2f} MB")
 
 def train(args):
-    args.save_dir = increment_path(Path(args.project) /str(args.train_sample)/args.dataset_name/args.name, exist_ok=args.exist_ok, sep='-')
+    # dataset/{args.dataset_name}/{args.city}
+    args.save_dir = increment_path(Path(args.project)/args.train_sample/args.dataset_name, exist_ok=args.exist_ok, sep='-')
     if not os.path.exists(args.save_dir): os.makedirs(args.save_dir)
 
     # Setup logger
@@ -65,19 +66,16 @@ def train(args):
 
     # %% ====================== Load data ======================
     # Read check-in train data
-    train_df = pd.read_csv(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_train))
-    # do test at each epoch
-    val_df = pd.read_csv(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_test))
-
+    dst_dir = f'dataset/{str(args.train_sample)}/{args.dataset_name}'
+    train_df = pd.read_csv(os.path.join(dst_dir, 'train.csv'))
+    val_df = pd.read_csv(os.path.join(dst_dir, 'test.csv'))
     # Build POI graph (built from train_df)
     print('Loading POI graph...')
-    raw_A = load_graph_adj_mtx(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_adj_mtx))
-    # raw_X = load_graph_node_features(os.path.join(f"dataset/{args.dataset_name}",args.data_node_feats),
-    #                                  args.feature1,
-    #                                  args.feature2,
-    #                                  args.feature3,
-    #                                  args.feature4)
-    raw_X = load_graph_node_features(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_node_feats), feature_indices=(1, 2, 5, 6))
+    raw_A = load_graph_adj_mtx(os.path.join(dst_dir,args.data_adj_mtx))
+    raw_X = load_graph_node_features(os.path.join(dst_dir,args.data_node_feats), feature_indices=(1, 2, 5, 6))
+
+    nodes_df = np.load(os.path.join(dst_dir,args.data_node_feats), allow_pickle=True) 
+        
     logging.info(
         f"raw_X.shape: {raw_X.shape}; "
         f"Four features: {args.feature1}, {args.feature2}, {args.feature3}, {args.feature4}.")
@@ -125,7 +123,6 @@ def train(args):
 
 
     # POI id to index
-    nodes_df = np.load(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_node_feats), allow_pickle=True) 
     poi_ids = list(set(nodes_df[:, 0].tolist()))
     poi_id2idx_dict = dict(zip(poi_ids, range(len(poi_ids))))
 
@@ -246,7 +243,7 @@ def train(args):
                               pin_memory=True, num_workers=args.workers,
                               collate_fn=lambda x: x)
     val_loader = DataLoader(val_dataset,
-                            batch_size=args.batch,
+                            batch_size=1,
                             shuffle=False, drop_last=False,
                             pin_memory=True, num_workers=args.workers,
                             collate_fn=lambda x: x)
@@ -303,6 +300,8 @@ def train(args):
                                   list(seq_model.parameters()),
                            lr=args.lr,
                            weight_decay=args.weight_decay)
+    
+    
 
     criterion_poi = nn.CrossEntropyLoss(ignore_index=-1)  # -1 is padding
     criterion_cat = nn.CrossEntropyLoss(ignore_index=-1)  # -1 is padding
@@ -453,7 +452,7 @@ def train(args):
                 label_seq = [each[0] for each in sample[2]]
                 input_seq_time = [each[1] for each in sample[1]]
                 label_seq_time = [each[1] for each in sample[2]]
-                label_seq_cats = [poi_idx2cat_idx_dict[each] for each in label_seq]
+                label_seq_cats = [poi_idx2cat_idx_dict.get(each,-1) for each in label_seq]
                 input_seq_embed = torch.stack(input_traj_to_embeddings(sample, poi_embeddings))
                 batch_seq_embeds.append(input_seq_embed)
                 batch_seq_lens.append(len(input_seq))
@@ -548,7 +547,7 @@ def train(args):
                              f'label_seq:{batch[sample_idx][2]}\n'
                              f'pred_seq_poi_wo_attn:{list(np.argmax(batch_pred_pois_wo_attn, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
                              f'pred_seq_poi:{list(np.argmax(batch_pred_pois, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
-                             f'label_seq_cat:{[poi_idx2cat_idx_dict[each[0]] for each in batch[sample_idx][2]]}\n'
+                             f'label_seq_cat:{[poi_idx2cat_idx_dict.get(each[0],-1) for each in batch[sample_idx][2]]}\n'
                              f'pred_seq_cat:{list(np.argmax(batch_pred_cats, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
                              f'label_seq_time:{list(batch_seq_labels_time[sample_idx].numpy()[:batch_seq_lens[sample_idx]])}\n'
                              f'pred_seq_time:{list(np.squeeze(batch_pred_times)[sample_idx][:batch_seq_lens[sample_idx]])} \n' +
@@ -575,6 +574,7 @@ def train(args):
         val_batches_time_loss_list = []
         val_batches_cat_loss_list = []
         src_mask = seq_model.generate_square_subsequent_mask(args.batch).to(args.device)
+        start_time = time.time()
         for vb_idx, batch in enumerate(val_loader):
             if len(batch) != args.batch:
                 src_mask = seq_model.generate_square_subsequent_mask(len(batch)).to(args.device)
@@ -666,6 +666,7 @@ def train(args):
             # Report validation progress
             if (vb_idx % (args.batch * 2)) == 0:
                 sample_idx = 0
+                print(len(batch),len(y_pred_poi))
                 batch_pred_pois_wo_attn = y_pred_poi.detach().cpu().numpy()
                 logging.info(f'Epoch:{epoch}, batch:{vb_idx}, '
                              f'val_batch_loss:{loss.item():.2f}, '
@@ -685,13 +686,14 @@ def train(args):
                              f'label_seq:{batch[sample_idx][2]}\n'
                              f'pred_seq_poi_wo_attn:{list(np.argmax(batch_pred_pois_wo_attn, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
                              f'pred_seq_poi:{list(np.argmax(batch_pred_pois, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
-                             f'label_seq_cat:{[poi_idx2cat_idx_dict[each[0]] for each in batch[sample_idx][2]]}\n'
+                             f'label_seq_cat:{[poi_idx2cat_idx_dict.get(each[0],-1) for each in batch[sample_idx][2]]}\n'
                              f'pred_seq_cat:{list(np.argmax(batch_pred_cats, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
                              f'label_seq_time:{list(batch_seq_labels_time[sample_idx].numpy()[:batch_seq_lens[sample_idx]])}\n'
                              f'pred_seq_time:{list(np.squeeze(batch_pred_times)[sample_idx][:batch_seq_lens[sample_idx]])} \n' +
                              '=' * 100)
         # valid end --------------------------------------------------------------------------------------------------------
-
+        total_time = time.time() - start_time
+        print(f"Total inference time is {total_time}!!")
         # Calculate epoch metrics
         epoch_train_top1_acc = np.mean(train_batches_top1_acc_list)
         epoch_train_top5_acc = np.mean(train_batches_top5_acc_list)
@@ -865,7 +867,6 @@ def train(args):
                 with open(rf"{model_save_dir}/best_epoch.txt", 'w') as f:
                     print(state_dict['epoch_val_metrics'], file=f)
                 max_val_score = monitor_score
-
         # Save train/val metrics for plotting purpose
         with open(os.path.join(args.save_dir, 'metrics-train.txt'), "w") as f:
             print(f'train_epochs_loss_list={[float(f"{each:.4f}") for each in train_epochs_loss_list]}', file=f)
@@ -882,19 +883,6 @@ def train(args):
             print(f'train_epochs_mAP20_list={[float(f"{each:.4f}") for each in train_epochs_mAP20_list]}', file=f)
             print(f'train_epochs_mrr_list={[float(f"{each:.4f}") for each in train_epochs_mrr_list]}', file=f)
             print(f'train_epochs_ndcg5_list={[float(f"{each:.4f}") for each in train_epochs_ndcg5_list]}', file=f)
-        with open(os.path.join(args.save_dir, 'metrics-val.txt'), "w") as f:
-            print(f'val_epochs_loss_list={[float(f"{each:.4f}") for each in val_epochs_loss_list]}', file=f)
-            print(f'val_epochs_poi_loss_list={[float(f"{each:.4f}") for each in val_epochs_poi_loss_list]}', file=f)
-            print(f'val_epochs_time_loss_list={[float(f"{each:.4f}") for each in val_epochs_time_loss_list]}', file=f)
-            print(f'val_epochs_cat_loss_list={[float(f"{each:.4f}") for each in val_epochs_cat_loss_list]}', file=f)
-            print(f'val_epochs_top1_acc_list={[float(f"{each:.4f}") for each in val_epochs_top1_acc_list]}', file=f)
-            print(f'val_epochs_top5_acc_list={[float(f"{each:.4f}") for each in val_epochs_top5_acc_list]}', file=f)
-            print(f'val_epochs_top10_acc_list={[float(f"{each:.4f}") for each in val_epochs_top10_acc_list]}', file=f)
-            print(f'val_epochs_top20_acc_list={[float(f"{each:.4f}") for each in val_epochs_top20_acc_list]}', file=f)
-            print(f'val_epochs_mAP20_list={[float(f"{each:.4f}") for each in val_epochs_mAP20_list]}', file=f)
-            print(f'val_epochs_mrr_list={[float(f"{each:.4f}") for each in val_epochs_mrr_list]}', file=f)
-            print(f'val_epochs_ndcg5_list={[float(f"{each:.4f}") for each in val_epochs_ndcg5_list]}', file=f)
-
 
 if __name__ == '__main__':
     args = parameter_parser()

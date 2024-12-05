@@ -212,8 +212,11 @@ def MRR_metric_last_timestep(y_true_seq, y_pred_seq):
     y_true = y_true_seq[-1]
     y_pred = y_pred_seq[-1]
     rec_list = y_pred.argsort()[-len(y_pred):][::-1]
-    r_idx = np.where(rec_list == y_true)[0][0]
-    return 1 / (r_idx + 1)
+    r_idx = np.where(rec_list == y_true)[0]
+    if r_idx.size == 0:
+        return 0  # or return np.nan, or handle it in a different way depending on your logic
+    
+    return 1 / (r_idx[0] + 1)
 
 def ndcg_k_last_timestep(y_true_seq, y_pred_scores, k):
     """Calculate NDCG for the last timestep predictions based on scores."""

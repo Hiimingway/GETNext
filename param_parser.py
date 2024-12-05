@@ -20,13 +20,6 @@ def parameter_parser():
     #                     default=device,
     #                     help='')
     # Data
-    parser.add_argument('--dataset_name',
-                    type=str,
-                    default='NYC',
-                    help='Name of dataset')
-    parser.add_argument('--train_sample',
-                type=float,
-                choices=[0.3,0.1,0.5])
     parser.add_argument('--data_adj_mtx',
                         type=str,
                         default='graph_A.npy',
@@ -105,16 +98,19 @@ def parameter_parser():
                         type=int,
                         default=128,
                         help='Node attn map hidden dimensions')
-
     # Training hyper-parameters
     parser.add_argument('--batch',
                         type=int,
-                        default=20,
+                        default=100,
                         help='Batch size.')
     parser.add_argument('--epochs',
                         type=int,
-                        default=10,
+                        default=5,
                         help='Number of epochs to train.')
+    parser.add_argument('--max_step',
+                    type=int,
+                    default=5,
+                    help='Number of steps to iterate.')
     parser.add_argument('--lr',
                         type=float,
                         default=0.001,
@@ -139,7 +135,7 @@ def parameter_parser():
                         help='whether save the embeddings')
     parser.add_argument('--workers',
                         type=int,
-                        default=0,
+                        default=4,
                         help='Num of workers for dataloader.')
     parser.add_argument('--project',
                         default='runs/train',
@@ -165,6 +161,10 @@ def parameter_parser():
                     type=int,
                     default=-1,
                     help='GPU ID to use, -1 for CPU only')
+    parser.add_argument('--train_sample',
+                choices = ['0.1','0.3','0.5','0.7'])
+    parser.add_argument('--dataset_name',
+                        choices = ['Moscow','NewYork','SaoPaulo','Tokyo','Shanghai_ISP'])
     
     args = parser.parse_args()
 
