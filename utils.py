@@ -3,7 +3,7 @@ import math
 import os
 import re
 from pathlib import Path
-
+import json
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
@@ -24,6 +24,29 @@ def init_torch_seeds(seed=0):
     else:  # faster, less reproducible
         cudnn.benchmark, cudnn.deterministic = True, False
 
+def haversine(lon1, lat1, lon2, lat2):
+    """
+    计算两个经纬度坐标之间的距离（单位：公里）
+    :param lon1: 第一个点的经度
+    :param lat1: 第一个点的纬度
+    :param lon2: 第二个点的经度
+    :param lat2: 第二个点的纬度
+    :return: 两点之间的距离（公里）
+    """
+    # 将经纬度从度转换为弧度
+    lon1, lat1, lon2, lat2 = map(math.radians, [lon1, lat1, lon2, lat2])
+    
+    # 计算差值
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    
+    # 应用 Haversine 公式
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    
+    # 地球半径（公里）
+    r = 6371
+    return r * c
 
 def zipdir(path, ziph, include_format):
     for root, dirs, files in os.walk(path):
@@ -212,8 +235,11 @@ def MRR_metric_last_timestep(y_true_seq, y_pred_seq):
     y_true = y_true_seq[-1]
     y_pred = y_pred_seq[-1]
     rec_list = y_pred.argsort()[-len(y_pred):][::-1]
-    r_idx = np.where(rec_list == y_true)[0][0]
-    return 1 / (r_idx + 1)
+    r_idx = np.where(rec_list == y_true)[0]
+    if r_idx.size == 0:
+        return 0  # or return np.nan, or handle it in a different way depending on your logic
+    
+    return 1 / (r_idx[0] + 1)
 
 def ndcg_k_last_timestep(y_true_seq, y_pred_scores, k):
     """Calculate NDCG for the last timestep predictions based on scores."""
@@ -230,3 +256,51 @@ def ndcg_k_last_timestep(y_true_seq, y_pred_scores, k):
 def array_round(x, k=4):
     # For a list of float values, keep k decimals of each element
     return list(np.around(np.array(x), k))
+
+def distance_metric(lab_poi, pred_poi, poi_dict):
+    """
+    计算预测 POI 与真实标签 POI 之间的距离
+    :param lab_poi: 真实标签 POI 的索引
+    :param pred_poi: 预测的 POI 索引
+    :param poi_dict: POI 字典，格式为 {poi_id: [longitude, latitude]}
+    :return: 预测 POI 与真实标签 POI 之间的距离（公里）
+    """
+    # 获取真实标签 POI 和预测 POI 的经纬度
+    lon1, lat1 = poi_dict[str(int(lab_poi.item()))]
+    lon2, lat2 = poi_dict[str(int(pred_poi.item()))]
+    
+    # 计算 Haversine 距离
+    return haversine(lon1, lat1, lon2, lat2)
+
+def norm_distance(lab, prd, traj_ids, dataset, train_sample):
+    """
+    计算预测 POI 与真实标签 POI 的平均距离
+    :param lab: 真实标签 POI 的索引
+    :param prd: 预测的 POI 排名
+    :param poi_dict: POI 字典，格式为 {poi_id: [longitude, latitude]}
+    :return: 平均距离（公里）
+    """
+    df = pd.read_csv(f"./data/{dataset}/preprocessed/{train_sample}/sample.csv")
+    with open(f"./data/{dataset}/preprocessed/{train_sample}/traj_info.json", 'r') as f:
+        traj_info = json.load(f)
+    with open(f"./data/{dataset}/preprocessed/{train_sample}/poi_info.json", 'r') as f:
+        poi_dict = json.load(f)
+        
+    checkin_offset = df.check_ins_id.max()
+    mean_distances = []
+    max_distances = []
+    for i in range(lab.shape[0]):
+        # 获取真实标签 POI 和预测的 top-1 POI
+        lab_poi = lab[i]
+        pred_poi = prd[i, 0]  # 取 top-1 预测结果
+        # 计算距离
+        dist = distance_metric(lab_poi, pred_poi, poi_dict)
+        traj_id = str(int(traj_ids[i].item() - checkin_offset))
+        max_traj_dist = traj_info[traj_id][1]
+        mean_traj_dist = traj_info[traj_id][0]
+        print("mean: ", mean_traj_dist, "max: ", max_traj_dist)
+        mean_distances.append(dist/mean_traj_dist)
+        max_distances.append(dist/max_traj_dist)
+    
+    # 返回平均距离
+    return sum(mean_distances) / len(mean_distances), sum(max_distances) / len(max_distances)

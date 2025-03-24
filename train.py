@@ -453,7 +453,7 @@ def train(args):
                 label_seq = [each[0] for each in sample[2]]
                 input_seq_time = [each[1] for each in sample[1]]
                 label_seq_time = [each[1] for each in sample[2]]
-                label_seq_cats = [poi_idx2cat_idx_dict[each] for each in label_seq]
+                label_seq_cats = [poi_idx2cat_idx_dict.get(each,-1) for each in label_seq]
                 input_seq_embed = torch.stack(input_traj_to_embeddings(sample, poi_embeddings))
                 batch_seq_embeds.append(input_seq_embed)
                 batch_seq_lens.append(len(input_seq))
@@ -548,7 +548,7 @@ def train(args):
                              f'label_seq:{batch[sample_idx][2]}\n'
                              f'pred_seq_poi_wo_attn:{list(np.argmax(batch_pred_pois_wo_attn, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
                              f'pred_seq_poi:{list(np.argmax(batch_pred_pois, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
-                             f'label_seq_cat:{[poi_idx2cat_idx_dict[each[0]] for each in batch[sample_idx][2]]}\n'
+                             f'label_seq_cat:{[poi_idx2cat_idx_dict.get(each[0],-1) for each in batch[sample_idx][2]]}\n'
                              f'pred_seq_cat:{list(np.argmax(batch_pred_cats, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
                              f'label_seq_time:{list(batch_seq_labels_time[sample_idx].numpy()[:batch_seq_lens[sample_idx]])}\n'
                              f'pred_seq_time:{list(np.squeeze(batch_pred_times)[sample_idx][:batch_seq_lens[sample_idx]])} \n' +
@@ -685,7 +685,7 @@ def train(args):
                              f'label_seq:{batch[sample_idx][2]}\n'
                              f'pred_seq_poi_wo_attn:{list(np.argmax(batch_pred_pois_wo_attn, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
                              f'pred_seq_poi:{list(np.argmax(batch_pred_pois, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
-                             f'label_seq_cat:{[poi_idx2cat_idx_dict[each[0]] for each in batch[sample_idx][2]]}\n'
+                             f'label_seq_cat:{[poi_idx2cat_idx_dict.get(each[0],-1) for each in batch[sample_idx][2]]}\n'
                              f'pred_seq_cat:{list(np.argmax(batch_pred_cats, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
                              f'label_seq_time:{list(batch_seq_labels_time[sample_idx].numpy()[:batch_seq_lens[sample_idx]])}\n'
                              f'pred_seq_time:{list(np.squeeze(batch_pred_times)[sample_idx][:batch_seq_lens[sample_idx]])} \n' +
