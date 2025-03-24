@@ -1,12 +1,11 @@
 import logging
-import logging
 import os
 import pathlib
 import pickle
 import zipfile
 from pathlib import Path
-import os
-
+import json
+import uuid
 import numpy as np
 import pandas as pd
 import torch
@@ -35,8 +34,10 @@ def monitor_memory():
     print(f"Max reserved memory: {max_reserved:.2f} MB")
 
 def train(args):
-    args.save_dir = increment_path(Path(args.project) /str(args.train_sample)/args.dataset_name/args.name, exist_ok=args.exist_ok, sep='-')
-    if not os.path.exists(args.save_dir): os.makedirs(args.save_dir)
+    args.save_dir = increment_path(Path(args.project) /args.dataset_name/args.name, exist_ok=args.exist_ok, sep='-')
+    
+    if not os.path.exists(args.save_dir): 
+        os.makedirs(args.save_dir)
 
     # Setup logger
     for handler in logging.root.handlers[:]:
@@ -62,22 +63,26 @@ def train(args):
     zipf = zipfile.ZipFile(os.path.join(args.save_dir, 'code.zip'), 'w', zipfile.ZIP_DEFLATED)
     zipdir(pathlib.Path().absolute(), zipf, include_format=['.py'])
     zipf.close()
-
+#   --epochs $5 \
+#   --gpu_id $1 $AUGMENTATION --aug_name $2 --data_path $6 \
+#   --input_session_path $3 \
+#   --dataset_name $7 --city $8 \
+#   --max_step "${10}" 
     # %% ====================== Load data ======================
     # Read check-in train data
-    train_df = pd.read_csv(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_train))
+    train_df = pd.read_csv(os.path.join(args.input_session_path, f"{args.aug_name}_train.csv"))
     # do test at each epoch
-    val_df = pd.read_csv(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_test))
+    val_df = pd.read_csv(os.path.join(args.input_session_path, f"{args.aug_name}_test.csv"))
 
     # Build POI graph (built from train_df)
     print('Loading POI graph...')
-    raw_A = load_graph_adj_mtx(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_adj_mtx))
+    raw_A = load_graph_adj_mtx(os.path.join(args.input_session_path,f"{args.aug_name}_{args.data_adj_mtx}"))
     # raw_X = load_graph_node_features(os.path.join(f"dataset/{args.dataset_name}",args.data_node_feats),
     #                                  args.feature1,
     #                                  args.feature2,
     #                                  args.feature3,
     #                                  args.feature4)
-    raw_X = load_graph_node_features(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_node_feats), feature_indices=(1, 2, 5, 6))
+    raw_X = load_graph_node_features(os.path.join(args.input_session_path,f"{args.aug_name}_{args.data_node_feats}"), feature_indices=(1, 2, 5, 6))
     logging.info(
         f"raw_X.shape: {raw_X.shape}; "
         f"Four features: {args.feature1}, {args.feature2}, {args.feature3}, {args.feature4}.")
@@ -125,7 +130,7 @@ def train(args):
 
 
     # POI id to index
-    nodes_df = np.load(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_node_feats), allow_pickle=True) 
+    nodes_df = np.load(os.path.join(args.input_session_path,f"{args.aug_name}_{args.data_node_feats}"), allow_pickle=True) 
     poi_ids = list(set(nodes_df[:, 0].tolist()))
     poi_id2idx_dict = dict(zip(poi_ids, range(len(poi_ids))))
 
@@ -548,7 +553,7 @@ def train(args):
                              f'label_seq:{batch[sample_idx][2]}\n'
                              f'pred_seq_poi_wo_attn:{list(np.argmax(batch_pred_pois_wo_attn, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
                              f'pred_seq_poi:{list(np.argmax(batch_pred_pois, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
-                             f'label_seq_cat:{[poi_idx2cat_idx_dict[each[0]] for each in batch[sample_idx][2]]}\n'
+                             f'label_seq_cat:{[poi_idx2cat_idx_dict.get(each[0],0) for each in batch[sample_idx][2]]}\n'
                              f'pred_seq_cat:{list(np.argmax(batch_pred_cats, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
                              f'label_seq_time:{list(batch_seq_labels_time[sample_idx].numpy()[:batch_seq_lens[sample_idx]])}\n'
                              f'pred_seq_time:{list(np.squeeze(batch_pred_times)[sample_idx][:batch_seq_lens[sample_idx]])} \n' +
@@ -666,6 +671,7 @@ def train(args):
             # Report validation progress
             if (vb_idx % (args.batch * 2)) == 0:
                 sample_idx = 0
+                print("batch:",batch)
                 batch_pred_pois_wo_attn = y_pred_poi.detach().cpu().numpy()
                 logging.info(f'Epoch:{epoch}, batch:{vb_idx}, '
                              f'val_batch_loss:{loss.item():.2f}, '
@@ -685,7 +691,7 @@ def train(args):
                              f'label_seq:{batch[sample_idx][2]}\n'
                              f'pred_seq_poi_wo_attn:{list(np.argmax(batch_pred_pois_wo_attn, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
                              f'pred_seq_poi:{list(np.argmax(batch_pred_pois, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
-                             f'label_seq_cat:{[poi_idx2cat_idx_dict[each[0]] for each in batch[sample_idx][2]]}\n'
+                             f'label_seq_cat:{[poi_idx2cat_idx_dict.get(each[0],0) for each in batch[sample_idx][2]]}\n'
                              f'pred_seq_cat:{list(np.argmax(batch_pred_cats, axis=2)[sample_idx][:batch_seq_lens[sample_idx]])} \n'
                              f'label_seq_time:{list(batch_seq_labels_time[sample_idx].numpy()[:batch_seq_lens[sample_idx]])}\n'
                              f'pred_seq_time:{list(np.squeeze(batch_pred_times)[sample_idx][:batch_seq_lens[sample_idx]])} \n' +
@@ -771,7 +777,41 @@ def train(args):
                      f"val_mAP20:{epoch_val_mAP20:.4f}, "
                      f"val_ndcg5:{epoch_val_ndcg5:.4f}, "
                      f"val_mrr:{epoch_val_mrr:.4f}")
+        
+        results = {
+            "Acc@1":epoch_val_top1_acc,
+            "Acc@5":epoch_val_top5_acc,
+            "Acc@20":epoch_val_top20_acc,
+            "Acc@10":epoch_val_top10_acc,
+            "MRR":epoch_val_mrr
+        }
+    
+        result_path = args.result_path
+        optim_path = args.optim_path
+            
+        if not os.path.exists(result_path):
+            os.makedirs(result_path)
 
+        # batch_{args.batch}_lr_{args.lr}_embed_{args.embed}_dropout_{args.dropout}
+        filename_LLM = f"GETNext_{args.dataset_name}_{args.city}_{args.aug_name}_epoch_{int(args.epochs)}_step_{int(args.max_step)}"
+        if args.param_op:
+            flag = ''.join(str(uuid.uuid4()).split('-'))
+            filename_LLM += "_" + flag
+            
+        if args.param_op:
+            with open(args.config_path, 'r') as f:
+                model_config = json.load(f)
+            results['config'] = model_config
+            uuid_path = os.path.dirname(args.config_path)
+            save_file = os.path.join(optim_path, '{}.json'.format(filename_LLM))
+            with open(os.path.join(uuid_path, 'uuid.json'), 'w') as f:
+                json.dump(flag, f)
+        elif args.use_aug:
+            save_file = os.path.join(result_path, '{}.json'.format(filename_LLM))
+        else:
+            save_file = './metrics-test.txt'
+        with open(save_file,  "w") as f:
+            json.dump(results, f, ensure_ascii=False)
         # Save poi and user embeddings
         if args.save_embeds:
             embeddings_save_dir = os.path.join(args.save_dir, 'embeddings')
@@ -898,6 +938,18 @@ def train(args):
 
 if __name__ == '__main__':
     args = parameter_parser()
+    if args.param_op:
+        with open(args.config_path, "r") as f:
+            model_settings = json.load(f)
+        args.poi_embed_dim = model_settings['poi-embed-dim']
+        args.user_embed_dim = model_settings['user-embed-dim']
+        args.time_embed_dim = model_settings['time-embed-dim']
+        args.cat_embed_dim = model_settings['cat-embed-dim']
+        args.batch = model_settings['batch']
+        args.lr = model_settings['lr']
+        args.transformer_dropout = model_settings['transformer-dropout']
+        args.weight_decay = model_settings['weight_decay']
+
     # The name of node features in NYC/graph_X.csv
     args.feature1 = 'checkin_cnt'
     args.feature2 = 'poi_catid'

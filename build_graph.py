@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from param_parser import parameter_parser
+import json
 
 def build_global_POI_checkin_graph(df, exclude_user=None):
     G = nx.DiGraph()
@@ -53,7 +54,7 @@ def build_global_POI_checkin_graph(df, exclude_user=None):
     return G
 
 
-def save_graph_to_csv(G, dst_dir):
+def save_graph_to_csv(G, aug_name, dst_dir):
     # Save graph to an adj matrix file and a nodes file
     # Adj matrix file: edge from row_idx to col_idx with weight; Rows and columns are ordered according to nodes file.
     # Nodes file: node_name/poi_id, node features (category, location); Same node order with adj matrix.
@@ -62,7 +63,7 @@ def save_graph_to_csv(G, dst_dir):
     nodelist = list(G.nodes())
     A = nx.adjacency_matrix(G, nodelist=nodelist)
     # np.save(os.path.join(dst_dir, 'adj_mtx.npy'), A.todense())
-    np.save(os.path.join(dst_dir, 'graph_A.npy'), A.todense(), allow_pickle=True)
+    np.save(os.path.join(dst_dir, f'{aug_name}_graph_A.npy'), A.todense(), allow_pickle=True)
 
         # 保存节点信息为二进制文件 (.npy)
     nodes_data = []
@@ -81,14 +82,14 @@ def save_graph_to_csv(G, dst_dir):
 
     # 转换为numpy数组后保存
     nodes_array = np.array(nodes_data, dtype=object)  # 使用dtype=object以支持字符串和数值
-    np.save(os.path.join(dst_dir, 'graph_X.npy'), nodes_array)
+    np.save(os.path.join(dst_dir, f'{aug_name}_graph_X.npy'), nodes_array)
 
 
-def save_graph_to_pickle(G, dst_dir):
-    pickle.dump(G, open(os.path.join(dst_dir, 'graph.pkl'), 'wb'))
+def save_graph_to_pickle(G, aug_name, dst_dir):
+    pickle.dump(G, open(os.path.join(dst_dir, f'{aug_name}_graph.pkl'), 'wb'))
 
 
-def save_graph_edgelist(G, dst_dir):
+def save_graph_edgelist(G, aug_name, dst_dir):
     # 确保目标目录存在
     if not os.path.exists(dst_dir):
         os.makedirs(dst_dir)
@@ -99,7 +100,7 @@ def save_graph_edgelist(G, dst_dir):
 
     # 保存节点ID映射为二进制文件 (.npy)
     node_id2idx_array = np.array(list(node_id2idx.items()), dtype=object)  # 使用 dtype=object 支持字符串和整数
-    np.save(os.path.join(dst_dir, 'graph_node_id2idx.npy'), node_id2idx_array)
+    np.save(os.path.join(dst_dir, f'{aug_name}_graph_node_id2idx.npy'), node_id2idx_array)
 
     # 保存边列表为二进制文件 (.npy)
     edge_data = []
@@ -108,7 +109,7 @@ def save_graph_edgelist(G, dst_dir):
 
     # 将边列表转换为 numpy 数组并保存
     edge_array = np.array(edge_data, dtype=object)  # 使用 dtype=object 支持浮点数和整数
-    np.save(os.path.join(dst_dir, 'graph_edge.npy'), edge_array)
+    np.save(os.path.join(dst_dir, f'{aug_name}_graph_edge.npy'), edge_array)
 
 def load_graph_adj_mtx(path):
     """A.shape: (num_node, num_node), edge from row_index to col_index with weight"""
@@ -149,15 +150,30 @@ def print_graph_statisics(G):
 
 if __name__ == '__main__':
     args = parameter_parser()
-    dst_dir = f'dataset/{str(args.train_sample)}/{args.dataset_name}'
     
+    if args.param_op:
+        with open(args.config_path, "r") as f:
+            model_settings = json.load(f)
+        args.poi_embed_dim = model_settings['poi-embed-dim']
+        args.user_embed_dim = model_settings['user-embed-dim']
+        args.time_embed_dim = model_settings['time-embed-dim']
+        args.cat_embed_dim = model_settings['cat-embed-dim']
+        args.batch = model_settings['batch']
+        args.lr = model_settings['lr']
+        args.transformer_dropout = model_settings['transformer-dropout']
+        args.weight_decay = model_settings['weight_decay']
+    
+    dst_dir = args.input_session_path
+    print(args.input_session_path)
 
     # Build POI checkin trajectory graph
-    train_df = pd.read_csv(os.path.join(dst_dir, 'train.csv'))
+    train_df = pd.read_csv(os.path.join(args.input_session_path, f'{args.aug_name}_train.csv'))
     print('Build global POI checkin graph -----------------------------------')
     G = build_global_POI_checkin_graph(train_df)
 
     # Save graph to disk
-    save_graph_to_pickle(G, dst_dir=dst_dir)
-    save_graph_to_csv(G, dst_dir=dst_dir)
-    save_graph_edgelist(G, dst_dir=dst_dir)
+    save_graph_to_pickle(G, args.aug_name, dst_dir=dst_dir)
+    save_graph_to_csv(G, args.aug_name, dst_dir=dst_dir)
+    save_graph_edgelist(G, args.aug_name, dst_dir=dst_dir)
+    
+

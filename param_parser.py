@@ -3,12 +3,6 @@ import argparse
 
 import torch
 
-# if torch.cuda.is_available():
-#     device = torch.device('cuda')
-# else:
-#     device = torch.device('cpu')
-
-
 def parameter_parser():
     parser = argparse.ArgumentParser(description="Run GETNext.")
     parser.add_argument('--seed',
@@ -24,9 +18,6 @@ def parameter_parser():
                     type=str,
                     default='NYC',
                     help='Name of dataset')
-    parser.add_argument('--train_sample',
-                type=float,
-                choices=[0.3,0.1,0.5])
     parser.add_argument('--data_adj_mtx',
                         type=str,
                         default='graph_A.npy',
@@ -35,18 +26,13 @@ def parameter_parser():
                         type=str,
                         default='graph_X.npy',
                         help='Graph node features path')
-    parser.add_argument('--data_train',
-                        type=str,
-                        default='train.csv',
-                        help='Training data path')
-    parser.add_argument('--data_test',
-                        type=str,
-                        default='test.csv',
-                        help='Test data path')
+
     parser.add_argument('--short_traj_thres',
                         type=int,
                         default=2,
                         help='Remove over-short trajectory')
+    parser.add_argument('--input_session_path',
+                    type=str)
     parser.add_argument('--time_units',
                         type=int,
                         default=48,
@@ -57,11 +43,13 @@ def parameter_parser():
                         help='The name of time feature in the data')
 
     # Model hyper-parameters
-    parser.add_argument('--poi-embed-dim',
+    parser.add_argument('--poi_embed_dim',
                         type=int,
                         default=128,
                         help='POI embedding dimensions')
-    parser.add_argument('--user-embed-dim',
+    parser.add_argument('--config_path',
+                    type=str)
+    parser.add_argument('--user_embed_dim',
                         type=int,
                         default=128,
                         help='User embedding dimensions')
@@ -85,15 +73,15 @@ def parameter_parser():
                         type=int,
                         default=2,
                         help='Num of heads in multiheadattention')
-    parser.add_argument('--transformer-dropout',
+    parser.add_argument('--transformer_dropout',
                         type=float,
                         default=0.3,
                         help='Dropout rate for transformer')
-    parser.add_argument('--time-embed-dim',
+    parser.add_argument('--time_embed_dim',
                         type=int,
                         default=32,
                         help='Time embedding dimensions')
-    parser.add_argument('--cat-embed-dim',
+    parser.add_argument('--cat_embed_dim',
                         type=int,
                         default=32,
                         help='Category embedding dimensions')
@@ -150,6 +138,12 @@ def parameter_parser():
     parser.add_argument('--exist-ok',
                         action='store_true',
                         help='existing project/name ok, do not increment')
+    parser.add_argument('--use_aug',
+                    action='store_true',
+                    help='Whether use DA')
+    parser.add_argument('--param_op',
+                    action='store_true',
+                    help='Whether use PA')
     parser.add_argument('--no-cuda',
                         action='store_true',
                         default=False, help='Disables CUDA training.')
@@ -165,7 +159,16 @@ def parameter_parser():
                     type=int,
                     default=-1,
                     help='GPU ID to use, -1 for CPU only')
-    
+    parser.add_argument('--city',
+                    type=str)
+    parser.add_argument('--aug_name',
+                type=str, default="1000_1000")
+    parser.add_argument('--result_path',
+            type=str)
+    parser.add_argument('--optim_path',
+        type=str)
+    parser.add_argument('--max_step',
+        type=str)
     args = parser.parse_args()
 
     # GPU 设置
