@@ -22,7 +22,7 @@ from dataloader import load_graph_adj_mtx, load_graph_node_features
 from model import GCN, NodeAttnMap, UserEmbeddings, Time2Vec, CategoryEmbeddings, FuseEmbeddings, TransformerModel
 from param_parser import parameter_parser
 from utils import increment_path, calculate_laplacian_matrix, zipdir, top_k_acc_last_timestep, \
-    mAP_metric_last_timestep, MRR_metric_last_timestep, maksed_mse_loss, ndcg_k_last_timestep
+    mAP_metric_last_timestep, MRR_metric_last_timestep, maksed_mse_loss, ndcg_k_last_timestep, norm_distance
 
 
 def monitor_memory():
@@ -123,11 +123,17 @@ def train(args):
 
 #     return node_names, checkin_cnt, poi_catid, poi_catid_code, poi_catname, latitude, longitude
 
-
+    poi_dict = {}
+    poi_coord = {}
     # POI id to index
     nodes_df = np.load(os.path.join(f"dataset/{str(args.train_sample)}/{args.dataset_name}",args.data_node_feats), allow_pickle=True) 
+    sample_df = pd.read_csv(f"dataset/{str(args.train_sample)}/{args.dataset_name}/sample.csv")
+    for row in sample_df.itertuples():
+        poi_coord.setdefault(row.POI_id,[row.longitude, row.latitude])
     poi_ids = list(set(nodes_df[:, 0].tolist()))
     poi_id2idx_dict = dict(zip(poi_ids, range(len(poi_ids))))
+    for poi_id, idx in poi_id2idx_dict.items():
+        poi_dict.setdefault(idx, poi_coord[poi_id])  # 重编码后POI_id到经纬度映射,即Poi idx to coord 
 
     # Cat id to index
     cat_ids = list(set(nodes_df[:, 2].tolist()))
@@ -237,7 +243,7 @@ def train(args):
 
     # %% ====================== Define dataloader ======================
     print('Prepare dataloader...')
-    train_dataset = TrajectoryDatasetTrain(train_df)
+    train_dataset = TrajectoryDatasetTrain(train_df)  #[input_seqs, label_seqs, traj_seqs]
     val_dataset = TrajectoryDatasetVal(val_df)
 
     train_loader = DataLoader(train_dataset,
@@ -395,6 +401,8 @@ def train(args):
     val_epochs_mAP20_list = []
     val_epochs_mrr_list = []
     val_epochs_loss_list = []
+    val_epochs_mean_dist_list = []
+    val_epochs_max_dist_list = []
     val_epochs_poi_loss_list = []
     val_epochs_time_loss_list = []
     val_epochs_cat_loss_list = []
@@ -446,7 +454,8 @@ def train(args):
             poi_embeddings = poi_embed_model(X, A)
 
             # Convert input seq to embeddings
-            for sample in batch:
+            #  #[input_seqs, label_seqs, traj_seqs]
+            for sample in batch:  
                 # sample[0]: traj_id, sample[1]: input_seq, sample[2]: label_seq
                 traj_id = sample[0]
                 input_seq = [each[0] for each in sample[1]]
@@ -462,12 +471,13 @@ def train(args):
                 batch_seq_labels_time.append(torch.FloatTensor(label_seq_time))
                 batch_seq_labels_cat.append(torch.LongTensor(label_seq_cats))
 
+# (batch_label_pois, batch_pred_pois, batch_seq_lens, batch_seq_traj_ids
             # Pad seqs for batch training
             batch_padded = pad_sequence(batch_seq_embeds, batch_first=True, padding_value=-1)
             label_padded_poi = pad_sequence(batch_seq_labels_poi, batch_first=True, padding_value=-1)
             label_padded_time = pad_sequence(batch_seq_labels_time, batch_first=True, padding_value=-1)
             label_padded_cat = pad_sequence(batch_seq_labels_cat, batch_first=True, padding_value=-1)
-
+            # 填充后是 [20,53], 即[batch_num, pad_length]
             # Feedforward
             x = batch_padded.to(device=args.device, dtype=torch.float)
             y_poi = label_padded_poi.to(device=args.device, dtype=torch.long)
@@ -563,6 +573,8 @@ def train(args):
         embed_fuse_model1.eval()
         embed_fuse_model2.eval()
         seq_model.eval()
+        val_batches_mean_dist_list = []
+        val_batches_max_dist_list = []
         val_batches_top1_acc_list = []
         val_batches_top5_acc_list = []
         val_batches_top10_acc_list = []
@@ -586,10 +598,12 @@ def train(args):
             batch_seq_labels_poi = []
             batch_seq_labels_time = []
             batch_seq_labels_cat = []
+            batch_seq_traj_ids = []
 
             poi_embeddings = poi_embed_model(X, A)
 
             # Convert input seq to embeddings
+            # #[input_seqs, label_seqs, traj_seqs]
             for sample in batch:
                 traj_id = sample[0]
                 input_seq = [each[0] for each in sample[1]]
@@ -606,6 +620,7 @@ def train(args):
                 batch_seq_labels_poi.append(torch.LongTensor(label_seq))
                 batch_seq_labels_time.append(torch.FloatTensor(label_seq_time))
                 batch_seq_labels_cat.append(torch.LongTensor(label_seq_cats))
+                batch_seq_traj_ids.append(traj_id)  # traj_ids不用填充
 
             # Pad seqs for batch training
             batch_padded = pad_sequence(batch_seq_embeds, batch_first=True, padding_value=-1)
@@ -637,11 +652,14 @@ def train(args):
             mAP20 = 0
             mrr = 0
             ndcg5 = 0
+            mean_dist = 0
+            max_dist = 0
             batch_label_pois = y_poi.detach().cpu().numpy()
             batch_pred_pois = y_pred_poi_adjusted.detach().cpu().numpy()
             batch_pred_times = y_pred_time.detach().cpu().numpy()
             batch_pred_cats = y_pred_cat.detach().cpu().numpy()
-            for label_pois, pred_pois, seq_len in zip(batch_label_pois, batch_pred_pois, batch_seq_lens):
+            # 每个batch挨个轨迹进行计算
+            for label_pois, pred_pois, seq_len, traj_id in zip(batch_label_pois, batch_pred_pois, batch_seq_lens, batch_seq_traj_ids):
                 label_pois = label_pois[:seq_len]  # shape: (seq_len, )
                 pred_pois = pred_pois[:seq_len, :]  # shape: (seq_len, num_poi)
                 top1_acc += top_k_acc_last_timestep(label_pois, pred_pois, k=1)
@@ -650,7 +668,11 @@ def train(args):
                 top20_acc += top_k_acc_last_timestep(label_pois, pred_pois, k=20)
                 mAP20 += mAP_metric_last_timestep(label_pois, pred_pois, k=20)
                 mrr += MRR_metric_last_timestep(label_pois, pred_pois)
+                mean_norm_dist, max_norm_dist = norm_distance(label_pois, pred_pois, traj_id, args.dataset_name, args.train_sample, poi_dict)
+                mean_dist += mean_norm_dist
+                max_dist += max_norm_dist
                 ndcg5 += ndcg_k_last_timestep(label_pois, pred_pois, k=5)
+            # 每个batch的均值
             val_batches_top1_acc_list.append(top1_acc / len(batch_label_pois))
             val_batches_top5_acc_list.append(top5_acc / len(batch_label_pois))
             val_batches_top10_acc_list.append(top10_acc / len(batch_label_pois))
@@ -658,6 +680,8 @@ def train(args):
             val_batches_mAP20_list.append(mAP20 / len(batch_label_pois))
             val_batches_mrr_list.append(mrr / len(batch_label_pois))
             val_batches_ndcg5_list.append(ndcg5 / len(batch_label_pois))
+            val_batches_mean_dist_list.append(mean_norm_dist / len(batch_label_pois))
+            val_batches_max_dist_list.append(max_norm_dist / len(batch_label_pois))
             val_batches_loss_list.append(loss.detach().cpu().numpy())
             val_batches_poi_loss_list.append(loss_poi.detach().cpu().numpy())
             val_batches_time_loss_list.append(loss_time.detach().cpu().numpy())
@@ -678,6 +702,8 @@ def train(args):
                              f'val_move_top10_acc:{np.mean(val_batches_top10_acc_list):.4f} \n'
                              f'val_move_top20_acc:{np.mean(val_batches_top20_acc_list):.4f} \n'
                              f'val_move_mAP20:{np.mean(val_batches_mAP20_list):.4f} \n'
+                             f'val_mean_dist:{np.mean(val_batches_mean_dist_list):.4f} \n'
+                             f'val_max_dist:{np.mean(val_batches_max_dist_list):.4f} \n'
                              f'val_move_MRR:{np.mean(val_batches_mrr_list):.4f} \n'
                              f'val_move_ndcg5:{np.mean(val_batches_ndcg5_list):.4f} \n'
                              f'traj_id:{batch[sample_idx][0]}\n'
@@ -694,6 +720,8 @@ def train(args):
 
         # Calculate epoch metrics
         epoch_train_top1_acc = np.mean(train_batches_top1_acc_list)
+        epoch_val_mean_dist = np.mean(val_batches_mean_dist_list)
+        epoch_val_max_dist = np.mean(val_batches_max_dist_list)
         epoch_train_top5_acc = np.mean(train_batches_top5_acc_list)
         epoch_train_top10_acc = np.mean(train_batches_top10_acc_list)
         epoch_train_top20_acc = np.mean(train_batches_top20_acc_list)
@@ -739,6 +767,8 @@ def train(args):
         val_epochs_mAP20_list.append(epoch_val_mAP20)
         val_epochs_mrr_list.append(epoch_val_mrr)
         val_epochs_ndcg5_list.append(epoch_val_ndcg5)
+        val_epochs_mean_dist_list.append(epoch_val_mean_dist)
+        val_epochs_max_dist_list.append(epoch_val_max_dist)
 
         # Monitor loss and score
         monitor_loss = epoch_val_loss
@@ -770,6 +800,8 @@ def train(args):
                      f"val_top20_acc:{epoch_val_top20_acc:.4f}, "
                      f"val_mAP20:{epoch_val_mAP20:.4f}, "
                      f"val_ndcg5:{epoch_val_ndcg5:.4f}, "
+                     f"val_mean_dist:{epoch_val_mean_dist:.4f}, "
+                     f"val_max_dist:{epoch_val_max_dist:.4f}, "
                      f"val_mrr:{epoch_val_mrr:.4f}")
 
         # Save poi and user embeddings
@@ -851,6 +883,8 @@ def train(args):
                     'epoch_val_top1_acc': epoch_val_top1_acc,
                     'epoch_val_top5_acc': epoch_val_top5_acc,
                     'epoch_val_top10_acc': epoch_val_top10_acc,
+                    'epoch_val_mean_dist': epoch_val_mean_dist,
+                    'epoch_val_max_dist': epoch_val_max_dist,
                     'epoch_val_top20_acc': epoch_val_top20_acc,
                     'epoch_val_mAP20': epoch_val_mAP20,
                     'epoch_val_mrr': epoch_val_mrr,
@@ -894,6 +928,8 @@ def train(args):
             print(f'val_epochs_mAP20_list={[float(f"{each:.4f}") for each in val_epochs_mAP20_list]}', file=f)
             print(f'val_epochs_mrr_list={[float(f"{each:.4f}") for each in val_epochs_mrr_list]}', file=f)
             print(f'val_epochs_ndcg5_list={[float(f"{each:.4f}") for each in val_epochs_ndcg5_list]}', file=f)
+            print(f'val_epochs_mean_dist_list={[float(f"{each:.4f}") for each in val_epochs_mean_dist_list]}', file=f)
+            print(f'val_epochs_max_dist_list={[float(f"{each:.4f}") for each in val_epochs_max_dist_list]}', file=f)
 
 
 if __name__ == '__main__':

@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 import json
 import numpy as np
+import pandas as pd
 import torch
 import torch.backends.cudnn as cudnn
 from scipy.sparse.linalg import eigsh
@@ -266,13 +267,13 @@ def distance_metric(lab_poi, pred_poi, poi_dict):
     :return: 预测 POI 与真实标签 POI 之间的距离（公里）
     """
     # 获取真实标签 POI 和预测 POI 的经纬度
-    lon1, lat1 = poi_dict[str(int(lab_poi.item()))]
-    lon2, lat2 = poi_dict[str(int(pred_poi.item()))]
+    lon1, lat1 = poi_dict[int(lab_poi.item())]
+    lon2, lat2 = poi_dict[int(pred_poi.item())]
     
     # 计算 Haversine 距离
     return haversine(lon1, lat1, lon2, lat2)
 
-def norm_distance(lab, prd, traj_ids, dataset, train_sample):
+def norm_distance(y_true_seq, y_pred_seq, traj_id, dataset, train_sample, poi_dict):
     """
     计算预测 POI 与真实标签 POI 的平均距离
     :param lab: 真实标签 POI 的索引
@@ -280,27 +281,16 @@ def norm_distance(lab, prd, traj_ids, dataset, train_sample):
     :param poi_dict: POI 字典，格式为 {poi_id: [longitude, latitude]}
     :return: 平均距离（公里）
     """
-    df = pd.read_csv(f"./data/{dataset}/preprocessed/{train_sample}/sample.csv")
-    with open(f"./data/{dataset}/preprocessed/{train_sample}/traj_info.json", 'r') as f:
+    with open(f"dataset/{train_sample}/{dataset}/traj_info.json", 'r') as f:
         traj_info = json.load(f)
-    with open(f"./data/{dataset}/preprocessed/{train_sample}/poi_info.json", 'r') as f:
-        poi_dict = json.load(f)
-        
-    checkin_offset = df.check_ins_id.max()
-    mean_distances = []
-    max_distances = []
-    for i in range(lab.shape[0]):
-        # 获取真实标签 POI 和预测的 top-1 POI
-        lab_poi = lab[i]
-        pred_poi = prd[i, 0]  # 取 top-1 预测结果
-        # 计算距离
-        dist = distance_metric(lab_poi, pred_poi, poi_dict)
-        traj_id = str(int(traj_ids[i].item() - checkin_offset))
-        max_traj_dist = traj_info[traj_id][1]
-        mean_traj_dist = traj_info[traj_id][0]
-        print("mean: ", mean_traj_dist, "max: ", max_traj_dist)
-        mean_distances.append(dist/mean_traj_dist)
-        max_distances.append(dist/max_traj_dist)
+
+    # 计算距离
+    y_true = y_true_seq[-1]
+    y_pred = y_pred_seq[-1]
+    top_rec = y_pred.argsort()[-1:][::-1]
+    dist = distance_metric(y_true, top_rec, poi_dict)
+    max_traj_dist = traj_info[traj_id][1]
+    mean_traj_dist = traj_info[traj_id][0]
     
     # 返回平均距离
-    return sum(mean_distances) / len(mean_distances), sum(max_distances) / len(max_distances)
+    return dist / mean_traj_dist, dist / max_traj_dist
